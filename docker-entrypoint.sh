@@ -19,7 +19,8 @@ SRC_DIR=/
 # WORDPRESS_DEBUG_DISPLAY=${WORDPRESS_DEBUG_DISPLAY-"0"}
 # WORDPRESS_SCRIPT_DEBUG=${WORDPRESS_SCRIPT_DEBUG-"0"}
 # WORDPRESS_SAVEQUERIES=${WORDPRESS_SAVEQUERIES-"0"}
-PHP_XDEBUG_ENABLED=${PHP_XDEBUG_ENABLED-"0"}
+# PHP_XDEBUG_ENABLED=${PHP_XDEBUG_ENABLED-"0"}
+PHP_XDEBUG_MODE=${PHP_XDEBUG_MODE-"off"}
 PHP_XDEBUG_REMOTE_PORT=${PHP_XDEBUG_REMOTE_PORT-"9000"}
 PHP_XDEBUG_HOST=${PHP_XDEBUG_HOST-"localhost"}
 IMPORT_SRC=${IMPORT_SRC-"/usr/share/wordpress-import"}
@@ -128,14 +129,19 @@ set_config() {
 if grep xdebug.so /usr/local/etc/php/php.ini >/dev/null ; then
     echo "Setting up xdebug.ini"
     cat > /usr/local/etc/php/conf.d/xdebug.ini <<EOF
-xdebug.remote_enable=$PHP_XDEBUG_ENABLED
-xdebug.remote_autostart=0
+;; xdebug.remote_enable=$PHP_XDEBUG_ENABLED
+xdebug.mode=$PHP_XDEBUG_MODE
+;; xdebug.remote_autostart=0
+xdebug.start_with_request=no
 ; xdebug.remote_connect_back=0
 ; does not work with docker services
-xdebug.remote_connect_back=0
+;; xdebug.remote_connect_back=0
+xdebug.discover_client_host=false
 ;; 9000 is bad since php fpm uses it by default
-xdebug.remote_port=$PHP_XDEBUG_REMOTE_PORT
-xdebug.remote_host=$PHP_XDEBUG_HOST
+;; xdebug.remote_port=$PHP_XDEBUG_REMOTE_PORT
+xdebug.client_port=$PHP_XDEBUG_REMOTE_PORT
+;; xdebug.remote_host=$PHP_XDEBUG_HOST
+xdebug.client_host=$PHP_XDEBUG_HOST
 xdebug.remote_log=/var/log/www/php-xdebug.log
 EOF
 fi
