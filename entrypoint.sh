@@ -19,10 +19,6 @@ SRC_DIR=/
 # WORDPRESS_DEBUG_DISPLAY=${WORDPRESS_DEBUG_DISPLAY-"0"}
 # WORDPRESS_SCRIPT_DEBUG=${WORDPRESS_SCRIPT_DEBUG-"0"}
 # WORDPRESS_SAVEQUERIES=${WORDPRESS_SAVEQUERIES-"0"}
-# PHP_XDEBUG_ENABLED=${PHP_XDEBUG_ENABLED-"0"}
-PHP_XDEBUG_MODE=${PHP_XDEBUG_MODE-"off"}
-PHP_XDEBUG_REMOTE_PORT=${PHP_XDEBUG_REMOTE_PORT-"9000"}
-PHP_XDEBUG_HOST=${PHP_XDEBUG_HOST-"localhost"}
 IMPORT_SRC=${IMPORT_SRC-"/usr/share/wordpress-import"}
 IMPORT_SQL=${IMPORT_SRC}/wordpress.sql
 # DOCKER_HOST=`ip route show | grep ^default | awk '{print $3}'`
@@ -102,9 +98,9 @@ if ! [ -e "${EXTRACT_DIR}/wordpress/wp-config.php" ] ; then
     cp "${SRC_DIR}/wp-config-template.php" "${EXTRACT_DIR}/wordpress/wp-config.php"
 fi
 
-#        BULLETPROOF writes this file
-#        if [ ! -e .htaccess ]; then
-#            cat > .htaccess <<-'EOF'
+# BULLETPROOF writes this file
+# if [ ! -e .htaccess ]; then
+#     cat > .htaccess <<-'EOF'
 # RewriteEngine On
 # RewriteBase /
 # RewriteRule ^index\.php$ - [L]
@@ -112,7 +108,7 @@ fi
 # RewriteCond %{REQUEST_FILENAME} !-d
 # RewriteRule . /index.php [L]
 # EOF
-#        fi
+# fi
 
 # TODO handle WordPress upgrades magically in the same way, but only if wp-includes/version.php's $wp_version is less
 # than /usr/share/wordpress/wp-includes/version.php's $wp_version
@@ -124,27 +120,6 @@ set_config() {
     sed_escaped_value="$(echo "$php_escaped_value" | sed 's/[\/&]/\\&/g')"
     sed -ri "s/((['\"])$key\2\s*,\s*)(['\"]).*\3/\1$sed_escaped_value/" "${EXTRACT_DIR}/wordpress/wp-config.php"
 }
-
-# TODO: Should probably be mounted in
-if grep xdebug.so /usr/local/etc/php/php.ini >/dev/null ; then
-    echo "Setting up xdebug.ini"
-    cat > /usr/local/etc/php/conf.d/xdebug.ini <<EOF
-;; xdebug.remote_enable=$PHP_XDEBUG_ENABLED
-xdebug.mode=$PHP_XDEBUG_MODE
-;; xdebug.remote_autostart=0
-xdebug.start_with_request=no
-; xdebug.remote_connect_back=0
-; does not work with docker services
-;; xdebug.remote_connect_back=0
-xdebug.discover_client_host=false
-;; 9000 is bad since php fpm uses it by default
-;; xdebug.remote_port=$PHP_XDEBUG_REMOTE_PORT
-xdebug.client_port=$PHP_XDEBUG_REMOTE_PORT
-;; xdebug.remote_host=$PHP_XDEBUG_HOST
-xdebug.client_host=$PHP_XDEBUG_HOST
-xdebug.remote_log=/var/log/www/php-xdebug.log
-EOF
-fi
 
 # allow any of these "Authentication Unique Keys and Salts." to be specified via
 # environment variables with a "WORDPRESS_" prefix (ie, "WORDPRESS_AUTH_KEY")

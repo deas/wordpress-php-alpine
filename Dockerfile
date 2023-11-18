@@ -1,6 +1,7 @@
-# FROM php:8.1-fpm-alpine
-# Also add --with-avif for v8.1
-FROM php:7.4-fpm-alpine
+# https://make.wordpress.org/core/handbook/references/php-compatibility-and-wordpress-versions/
+# PHP 8.x with exceptions/beta as of 11/10/2023
+FROM php:8.1-fpm-alpine
+# FROM php:7.4-fpm-alpine
 LABEL vendor="Contentreich" \
       maintainer="a.steffan@contentreich.de" \
       description="Contentreich Wordpress based on PHP FPM" \
@@ -15,10 +16,10 @@ ENV LANG C
 # TODO: edge/community is a quick hack to get usermod/groupmod from shadow used by entrypoint
 # apt-get update && apt-get install -y libpng12-dev libjpeg-dev libfreetype6-dev wget ssmtp  \
 
-
+# linux-headers / --with-avif for v8.1
 RUN echo http://dl-2.alpinelinux.org/alpine/edge/community/ >> /etc/apk/repositories \
-    && apk add --no-cache --virtual .persistent-deps libpng-dev libjpeg-turbo-dev libavif-dev libwebp-dev freetype-dev wget ssmtp shadow \
-    && docker-php-ext-configure gd --enable-gd --with-jpeg --with-freetype --with-webp \
+    && apk add --no-cache --virtual .persistent-deps libpng-dev libjpeg-turbo-dev libavif-dev libwebp-dev freetype-dev wget ssmtp shadow linux-headers \
+    && docker-php-ext-configure gd --enable-gd --with-jpeg --with-freetype --with-webp --with-avif \
     && pecl install xdebug \
     && docker-php-ext-install gd mysqli opcache \
     && wget https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -O /usr/local/bin/wp && chmod 755 /usr/local/bin/wp \
@@ -38,7 +39,7 @@ RUN { \
 # Most frequent changing stuff last
 # ADD ../ does not work
 ADD wp-config-template.php /wp-config-template.php
-ADD docker-entrypoint.sh /entrypoint.sh
+ADD entrypoint.sh /entrypoint.sh
 ADD execute-statements-mysql.php  /execute-statements-mysql.php
 ADD rename_site.php /rename_site.php
 ADD contentreich.ini /usr/local/etc/php/conf.d
