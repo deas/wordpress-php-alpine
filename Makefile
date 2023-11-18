@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 HELP-DESCRIPTION-SPACING := 24
-IMAGE := deas/cr-wordpress:8.1.wip-fpm-alpine
+IMAGE := deas/wordpress:8.1.wip-fpm-alpine
 
 .PHONY: help docker-build act-build
 
