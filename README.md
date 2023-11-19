@@ -123,6 +123,7 @@ TODO
 
 ## TODO
 - [ ] Introduce `devenv`
+- [ ] Try [Chainguard Image](https://www.chainguard.dev/chainguard-images) (Wolfi)
   - [ ] Leverage `act`
 
 See the [open issues](https://github.com/deas/wordpress-php-alpine/issues) for a full list of proposed features (and known issues).
