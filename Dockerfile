@@ -18,10 +18,10 @@ ENV LANG C
 
 # linux-headers / --with-avif for v8.1
 RUN echo http://dl-2.alpinelinux.org/alpine/edge/community/ >> /etc/apk/repositories \
-    && apk add --no-cache --virtual .persistent-deps libpng-dev libjpeg-turbo-dev libavif-dev libwebp-dev freetype-dev wget ssmtp shadow linux-headers \
-    && docker-php-ext-configure gd --enable-gd --with-jpeg --with-freetype --with-webp --with-avif \
+    && apk add --no-cache --virtual .persistent-deps libzip-dev libpng-dev libjpeg-turbo-dev libavif-dev libwebp-dev freetype-dev wget ssmtp shadow linux-headers \
+    && docker-php-ext-configure gd --enable-gd --with-jpeg --with-freetype --with-webp --with-avif && docker-php-ext-configure zip \
     && pecl install xdebug \
-    && docker-php-ext-install gd mysqli opcache \
+    && docker-php-ext-install zip gd mysqli opcache \
     && wget https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -O /usr/local/bin/wp && chmod 755 /usr/local/bin/wp \
     && echo "zend_extension = "`ls /usr/local/lib/php/extensions/*/xdebug.so` >>  /usr/local/etc/php/php.ini
 
