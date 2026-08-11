@@ -17,16 +17,84 @@ permissions:
   id-token: write # needed for keyless signing
   packages: write # needed for ghcr access
 
+env:
+  REGISTRY_IMAGE: ghcr.io/deas/wordpress
+
 jobs:
-  release:
+  # One native runner per arch, no emulation. Nothing is tagged here: each leg
+  # pushes an untagged image and hands its digest to the merge job.
+  # ubuntu-24.04-arm is free for public repos.
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v3
+      - name: Prepare platform label
+        run: |
+          platform=${{ matrix.platform }}
+          echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+      - name: Setup Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v2
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GHCR_TOKEN }}
+      - name: Generate images meta # labels only, tags are applied on merge
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v3
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: .
+          # file: ./Dockerfile.xx
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Single manifest list covering both arches, pushed to the real tags.
+  # Skipped if either leg failed, so a single arch image is never tagged.
+  merge:
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
         with:
-          fetch-depth: 0
-      # - uses: sigstore/cosign-installer@main
+          fetch-depth: 0 # rev-list --count below needs full history
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
       - name: Setup Docker Buildx
-        id: buildx
         uses: docker/setup-buildx-action@v2
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v2
@@ -38,33 +106,29 @@ jobs:
         id: prep
         run: |
           build_id=8.1.$(git rev-list --count HEAD)-fpm-alpine
-          echo "::set-output name=VERSION::${build_id}"
+          echo "VERSION=${build_id}" >> "$GITHUB_OUTPUT"
         #run: |
         #  VERSION=sha-${GITHUB_SHA::8}
         #  if [[ $GITHUB_REF == refs/tags/* ]]; then
         #    VERSION=${GITHUB_REF/refs\/tags\//}
         #  fi
-        #  echo ::set-output name=BUILD_DATE::$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-        #  echo ::set-output name=VERSION::${VERSION}
       - name: Generate images meta
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images: |
-            ghcr.io/deas/wordpress
+          images: ${{ env.REGISTRY_IMAGE }}
           tags: |
             type=raw,value=${{ steps.prep.outputs.VERSION }}
             type=raw,value=latest
-      - name: Publish linux/amd64 image # multi-arch image
-        uses: docker/build-push-action@v3
-        with:
-          push: true
-          builder: ${{ steps.buildx.outputs.name }}
-          context: .
-          # file: ./Dockerfile.xx
-          # platforms: linux/amd64,linux/arm/v7,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ steps.prep.outputs.VERSION }}
       #- name: Sign OCI artifacts
       #  env:
       #    COSIGN_EXPERIMENTAL: 1
