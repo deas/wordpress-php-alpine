@@ -172,14 +172,24 @@ EOF
 #    -e "s/.*FromLineOverride=.*/FromLineOverride=YES/" \
 #     /etc/ssmtp/ssmtp.conf
 
-# Dev goodness
-# No usermod/groupmod in alpine
-if [ -n "${WWW_UID}" ] ; then
-    usermod -u ${WWW_UID} www-data
+# Dev goodness: match www-data to the owner of a bind-mounted tree, so php can
+# write it without a chown. (usermod/groupmod come from `shadow`, which the
+# Dockerfile pulls in from edge/community for exactly this.)
+#
+# Both the guard and -o are load-bearing under ROOTLESS docker. There the only
+# container uid that maps back to the host user owning the mount is 0, and root
+# already holds it — so a plain `usermod -u 0 www-data` exits with
+#   usermod: UID '0' already exists
+# and, because of the `set -xe` above, kills the container before php-fpm ever
+# starts. -o permits the duplicate; the guard keeps the whole thing a no-op when
+# www-data is already on the requested id, which is the normal production case
+# (WWW_UID=82). Same reasoning for the gid.
+if [ -n "${WWW_UID}" ] && [ "${WWW_UID}" != "$(id -u www-data)" ] ; then
+    usermod -o -u "${WWW_UID}" www-data
 fi
 
-if [ -n "${WWW_GID}" ] ; then
-    groupmod -g ${WWW_GID} www-data
+if [ -n "${WWW_GID}" ] && [ "${WWW_GID}" != "$(id -g www-data)" ] ; then
+    groupmod -o -g "${WWW_GID}" www-data
 fi
 
 # Make sure php can write!

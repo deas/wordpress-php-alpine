@@ -28,6 +28,9 @@ There is no test suite — `.github/workflows/test.yml` only echoes `make test`,
 5. Rewrites the 8 auth keys/salts in `wp-config.php` via `sed`, taking `WORDPRESS_<KEY>` env vars (e.g. `WORDPRESS_AUTH_KEY`) or generating random values.
 6. Regenerates `/etc/ssmtp/ssmtp.conf` from scratch (mailhub is hardcoded to host `smtp`; `SMTP_DOMAIN` sets the rewrite domain).
 7. Optionally remaps `www-data` to `WWW_UID`/`WWW_GID` (dev UID matching for bind mounts), chowns `/var/log/www`, then `exec "$@"` (default `php-fpm`).
+   - The remap is skipped when `www-data` already holds the requested id, so the production case (`WWW_UID=82`) runs no `usermod` at all.
+   - It uses `usermod -o` / `groupmod -o` (non-unique). This is what makes `WWW_UID=0` usable, which **rootless docker requires**: there the only container uid mapping back to the host user who owns a bind mount is 0, and root already holds it, so a plain `usermod -u 0` exits `UID '0' already exists` and `set -xe` kills the container before php starts.
+   - `WWW_UID=0` additionally needs the pool to be allowed to run as root — php-fpm checks the *resolved uid*, not the user name, so remapping `www-data` to 0 is not enough on its own and fpm exits `please specify user and group other than root`. Callers must start it as `php-fpm -R`. In rootless docker that "root" is the invoking user's own unprivileged host account, not real root.
 
 **Config contract** — `wp-config-template.php` resolves everything through `getenv()` at request time, so the file itself is static apart from the salts:
 
