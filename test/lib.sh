@@ -98,6 +98,44 @@ ep_probe() {
         sed -n 's/.*__PROBE__\(.*\)__END__.*/\1/p' | head -1
 }
 
+# ---------------------------------------------------------------- batching --
+#
+# A container start costs ~3.8s here, and it dominates everything — the harness
+# itself is not measurable next to it. So checks that only INSPECT the image
+# (which is most of them) share one container instead of paying that each.
+#
+# The exceptions are real and stay one-container-per-case: anything that depends
+# on the environment a container was CREATED with, i.e. the xdebug matrix and
+# the uid remap. Those cannot be batched by definition.
+#
+# Usage — the script arrives on stdin, so a quoted heredoc keeps every quote
+# intact and nothing is expanded host-side:
+#
+#     batch_run <<'PROBE'
+#     emit answer "$(compute-something)"
+#     php -r 'printf("__P__pi=%s__E__\n", M_PI);'
+#     PROBE
+#     assert_eq "42" "$(batch_get answer)" "..."
+#
+# Shell values go through emit; PHP can print the marker lines itself, which
+# avoids a second layer of quoting. Marker discipline is the same as the single
+# probes and for the same reason — see php_probe.
+BATCH_FILE=""
+
+batch_run() {
+    [ -n "$BATCH_FILE" ] && rm -f "$BATCH_FILE"
+    BATCH_FILE=$(mktemp)
+    {
+        printf 'emit() { printf "__P__%%s=%%s__E__\\n" "$1" "$2"; }\n'
+        cat
+    } | docker run --rm -i --entrypoint sh -e WP_DB_PASS=probe "$@" "$IMAGE" -s 2>/dev/null |
+        sed -n 's/.*__P__\(.*\)__E__.*/\1/p' >"$BATCH_FILE"
+}
+
+batch_get() {
+    sed -n "s/^$1=//p" "$BATCH_FILE" | head -1
+}
+
 summary() {
     printf '\n'
     if [ "$TESTS_FAILED" -eq 0 ]; then
