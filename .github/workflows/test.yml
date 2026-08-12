@@ -25,15 +25,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # bats-support and bats-assert are vendored in test/lib, so only bats
+      # itself is installed here. `parallel` is what bats --jobs needs.
+      - name: Install bats
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq bats parallel
+
       # Cached, unlike `make docker-build`'s --no-cache: CI wants the fast path,
       # and release.yml is what builds the artefact that actually ships.
       - name: Build image
         run: docker build -t deas/wordpress:ci .
 
       # Fast suites first, so a missing extension or a broken xdebug toggle
-      # fails in seconds rather than after a database and a WordPress download.
+      # fails in ~30s rather than after a database and a WordPress download.
       - name: Test — image, xdebug, entrypoint
-        run: IMAGE=deas/wordpress:ci SKIP_INTEGRATION=1 test/run.sh
+        run: IMAGE=deas/wordpress:ci SKIP_INTEGRATION=1 bats --jobs 4 --formatter tap test/
 
       - name: Test — integration (installs WordPress against MariaDB)
-        run: IMAGE=deas/wordpress:ci test/run.sh 40
+        run: IMAGE=deas/wordpress:ci bats --formatter tap test/40-integration.bats

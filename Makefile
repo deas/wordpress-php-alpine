@@ -21,14 +21,24 @@ docker-build: ## Build docker image locally
 act-build: ## Build image with act
 	false
 
+# bats-core, with bats-support/bats-assert VENDORED under test/lib (neither is
+# packaged everywhere, and a suite that only runs where someone remembered to
+# install two helper libraries stops being run).
+#
 # The suite asserts against an image that already exists rather than building
 # one, so the same command checks a local build and a published tag:
-#   make test                                    the Makefile's IMAGE
+#   make test                                     the Makefile's IMAGE
 #   IMAGE=ghcr.io/deas/wordpress:latest make test  whatever is live
-test: ## Run the image test suite (needs docker; integration pulls mariadb)
-	IMAGE=$(IMAGE) test/run.sh
+#
+# --jobs is where the time goes: the xdebug matrix and the uid remap need one
+# container CREATED per case, which batching cannot help. 104s -> 30s at -j8.
+# 40-integration.bats opts itself out via BATS_NO_PARALLELIZE_WITHIN_FILE.
+JOBS ?= $(shell nproc 2>/dev/null || echo 4)
+
+test: ## Run the image test suite (needs docker + bats; integration pulls mariadb)
+	IMAGE=$(IMAGE) bats --jobs $(JOBS) test/
 
 test-fast: ## Same, without the suite that needs a database
-	IMAGE=$(IMAGE) SKIP_INTEGRATION=1 test/run.sh
+	IMAGE=$(IMAGE) SKIP_INTEGRATION=1 bats --jobs $(JOBS) test/
 
 
