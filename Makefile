@@ -4,7 +4,7 @@ HELP-DESCRIPTION-SPACING := 24
 # .github/workflows/release.yml — three places, nothing enforces they agree.
 IMAGE := deas/wordpress:8.5.wip-fpm-alpine
 
-.PHONY: help docker-build act-build
+.PHONY: help docker-build act-build test test-fast
 
 # ------- Help ----------------------- #
 # Source: https://nedbatchelder.com/blog/201804/makefile_help_target.html
@@ -20,5 +20,15 @@ docker-build: ## Build docker image locally
 
 act-build: ## Build image with act
 	false
+
+# The suite asserts against an image that already exists rather than building
+# one, so the same command checks a local build and a published tag:
+#   make test                                    the Makefile's IMAGE
+#   IMAGE=ghcr.io/deas/wordpress:latest make test  whatever is live
+test: ## Run the image test suite (needs docker; integration pulls mariadb)
+	IMAGE=$(IMAGE) test/run.sh
+
+test-fast: ## Same, without the suite that needs a database
+	IMAGE=$(IMAGE) SKIP_INTEGRATION=1 test/run.sh
 
 

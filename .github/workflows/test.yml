@@ -5,17 +5,35 @@ on:
   push:
     branches:
       - 'main'
+    # NOTE: the other two workflows filter on 'release.yml' even inside
+    # test.yml / cve-scan.yml, so edits to them trigger nothing. This list names
+    # what actually affects the test result — including test/** itself, or a
+    # broken suite could be merged without ever having run.
     paths:
       - 'Dockerfile'
       - 'entrypoint.sh'
-      - '.github/workflows/release.yml'
+      - 'wp-config-template.php'
+      - 'contentreich.ini'
+      - 'Makefile'
+      - 'test/**'
+      - '.github/workflows/test.yml'
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
-      - name: Run unit tests
-        run: echo "make test"
-      
+        uses: actions/checkout@v4
+
+      # Cached, unlike `make docker-build`'s --no-cache: CI wants the fast path,
+      # and release.yml is what builds the artefact that actually ships.
+      - name: Build image
+        run: docker build -t deas/wordpress:ci .
+
+      # Fast suites first, so a missing extension or a broken xdebug toggle
+      # fails in seconds rather than after a database and a WordPress download.
+      - name: Test — image, xdebug, entrypoint
+        run: IMAGE=deas/wordpress:ci SKIP_INTEGRATION=1 test/run.sh
+
+      - name: Test — integration (installs WordPress against MariaDB)
+        run: IMAGE=deas/wordpress:ci test/run.sh 40
