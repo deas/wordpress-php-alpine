@@ -2,20 +2,49 @@
 
 ## What this is
 
-A single container image (`ghcr.io/deas/wordpress`, `php:8.1-fpm-alpine` base) that runs WordPress under PHP-FPM. There is no application code here — WordPress itself is downloaded at container start. The repo is the _execution environment_: PHP extensions, `wp-cli`, ssmtp mail, xdebug, and a boot script that provisions/repairs a WordPress install from environment variables.
+A single container image (`ghcr.io/deas/wordpress`, `php:8.5-fpm-alpine` base) that runs WordPress under PHP-FPM. There is no application code here — WordPress itself is downloaded at container start. The repo is the _execution environment_: PHP extensions, `wp-cli`, ssmtp mail, xdebug, and a boot script that provisions/repairs a WordPress install from environment variables.
 
 ## Commands
 
 ```sh
 make                 # help (default goal), lists targets
-make docker-build    # docker build --no-cache -t deas/wordpress:8.1.wip-fpm-alpine .
+make docker-build    # docker build --no-cache -t deas/wordpress:8.5.wip-fpm-alpine .
 ```
 
-There is no test suite — `.github/workflows/test.yml` only echoes `make test`, and `make act-build` is a stub that runs `false`. Verification means building the image and running it against a MySQL container.
+```sh
+make test            # bats, parallel (--jobs nproc); needs docker + bats
+make test-fast       # same, minus the suite that needs a database
+bats test/20-xdebug.bats          # one file
+IMAGE=ghcr.io/deas/wordpress:latest make test   # check a published tag
+```
+
+**Tests** are bats-core under `test/`, 60 assertions in four files. They assert against an image that **already exists** and never build one, which is why the same command checks a local build and whatever is live. `make act-build` is still a `false` stub.
+
+- `10-image` extensions, gd flags, imagick delegates, ICU data, binaries, build-hygiene guards · `20-xdebug` the toggle truth table · `30-entrypoint` WP_DB_PASS guard, uid remap, ssmtp, the salt contract · `40-integration` empty volume + MariaDB → installed WordPress.
+- `bats-support` / `bats-assert` are **vendored** in `test/lib`, not installed — a suite that only runs where two helper libraries happen to be installed stops being run.
+- **Three conventions exist because breaking them produces false results, not failures:**
+  - Every probe prints a marker and only the marked line is read back. The entrypoint runs `printenv` under `set -x`, so grepping raw output for `xdebug` matches `PHP_XDEBUG_ENABLED=0` and reports the opposite of the truth.
+  - **Probes must not merge stderr.** The `set -x` trace echoes the command being exec'd, so a probe's own `printf` format appears *before* its output and extraction returns the literal `%s`. This once made "salts are stable across a restart" compare two degraded probes and pass having checked nothing.
+  - `sh_probe` bypasses the entrypoint (`--entrypoint sh`), `ep_probe` runs through it. Probing entrypoint behaviour with the former inspects an unmodified image and fails every assertion for the wrong reason.
+- What is batched and what is not is a deliberate split: checks that only **inspect** the image share one container (`setup_file`), which took `10-image` from ~57s to 1s. Anything depending on the environment a container was **created** with — the xdebug matrix, the uid remap — is one container per case and is what `--jobs` is for. `40-integration` opts out of parallelism via `BATS_NO_PARALLELIZE_WITHIN_FILE`, since its tests share a volume and build on each other.
 
 ## Architecture
 
-**Build (`Dockerfile`)** — installs gd (jpeg/freetype/webp/avif), zip, mysqli, opcache, xdebug (registered by appending `zend_extension=` to `php.ini`), and `wp` (wp-cli phar) into `/usr/local/bin`. Alpine `edge/community` is added to the repo list solely to get `usermod`/`groupmod` from `shadow`, which the entrypoint needs. `contentreich.ini` (dropped into `conf.d`) points `mysqli.default_socket` at `/var/run/mysqld/mysqld.sock` so a socket mount works.
+**Build (`Dockerfile`)** — installs gd (jpeg/freetype/webp/avif), zip, mysqli, exif, intl, imagick, xdebug, and `wp` (wp-cli phar) into `/usr/local/bin`. `contentreich.ini` (dropped into `conf.d`) points `mysqli.default_socket` at `/var/run/mysqld/mysqld.sock` so a socket mount works.
+
+Four things about this layer are load-bearing and easy to undo by accident:
+
+- **`opcache` is NOT in the ext-install list.** As of PHP 8.5 the official image compiles it in statically, so `docker-php-ext-install opcache` builds no module and fails the layer with `cp: can't stat 'modules/*'`. It is still loaded — the untouched base already reports `Zend OPcache` in `php -m`. Adding it back breaks the build outright.
+- **No `edge/community` repository.** It used to be added "as a quick hack to get usermod/groupmod from shadow", and it was a standing hazard: with edge in the list, any apk resolution may pull an edge package onto a stable base. `shadow` is in `v3.24/community`, which the base already enables.
+- **Build deps are a deleted virtual package.** The `-dev` headers used to be installed as `.persistent-deps` and never removed, so they shipped to production — weight, plus CVE surface that `cve-scan.yml` then reported against.
+- **`exif` / `intl` / `imagick` answer WordPress's own Site Health**, which listed all three as missing optional modules. `imagick` is the one taken on a calculated risk: Alpine 3.24 ships ImageMagick 7.1.2-27 marked *(Beta)*, and installing it **changes which image editor WordPress picks** — on contentreich it moved from GD to `EWWWIO_Imagick_Editor`. Back it out by dropping the module plus the `imagemagick`/`imagemagick-dev` packages.
+
+**Xdebug is present but NOT loaded by default**, and that is the whole point of how it is packaged. The build generates the ini the normal way and then moves it *out* of `conf.d` to `/usr/local/etc/php/xdebug.ini.available`; `entrypoint.sh` copies it back only when `PHP_XDEBUG_ENABLED` matches an explicit allow-list (`1|true|yes|on`, any case). It previously appended `zend_extension=` to `php.ini` itself, so production carried a loaded debugger with no way to switch it off and every PHP notice came out wrapped in a ten-frame stack trace — on stdout, where wp-cli output is parsed.
+
+- **The allow-list is not fussiness.** `docker-compose.yml` on the consuming side passes `PHP_XDEBUG_ENABLED=0` as its *default*; a `[ -n "$VAR" ]` test would load the debugger on every production container. Same family of trap as the `(bool) getenv()` one in `wp-config-template.php`, where `'0'` is true.
+- **Mode and client host/port need no variable of ours.** Xdebug 3 reads `XDEBUG_MODE` and `XDEBUG_CONFIG` from the environment itself (`XDEBUG_MODE=profile`, `XDEBUG_CONFIG="client_host=host.docker.internal client_port=9003"`). `PHP_XDEBUG_REMOTE_PORT` is honoured only because the compose files already carry it.
+- The staged ini defaults to `start_with_request=trigger`, so "enabled" does not mean "slow" — Xdebug stays dormant until a request carries `XDEBUG_TRIGGER`. Default client port is **9003** (the Xdebug 3 default, what IDEs expect), not 9000/9100.
+- An `env_file` is read when the container is **created**, so toggling needs a recreate, not a restart.
 
 **Volumes / paths** — `WORKDIR` is `/usr/share/wordpress`; `EXTRACT_DIR=..` in the entrypoint therefore resolves to `/usr/share`, and the tarball unpacks to `/usr/share/wordpress`. `${EXTRACT_DIR}/wordpress` and the working dir are the same directory — keep that in mind when editing paths. `/usr/share/wordpress` and `/var/log/www` are `VOLUME`s.
 
@@ -25,7 +54,9 @@ There is no test suite — `.github/workflows/test.yml` only echoes `make test`,
 2. Fails hard if `WP_DB_PASS` is unset.
 3. If no WordPress present → fetch the current version from `api.wordpress.org` and untar it. **`elif`** an SQL dump exists at `${IMPORT_SRC}/wordpress.sql` (default `/usr/share/wordpress-import`) → pipe it through `execute-statements-mysql.php`, then, if `WORDPRESS_HOME` is set, run the site rename. Import only happens on an _existing_ install; a fresh install never imports on the same run.
 4. Copies `wp-config-template.php` → `wp-config.php` when missing.
-5. Rewrites the 8 auth keys/salts in `wp-config.php` via `sed`, taking `WORDPRESS_<KEY>` env vars (e.g. `WORDPRESS_AUTH_KEY`) or generating random values.
+5. Sets the 8 auth keys/salts in `wp-config.php` via `sed`, **idempotently**. Per key: `WORDPRESS_<KEY>` set (e.g. `WORDPRESS_AUTH_KEY`) → applied on every boot; still carrying the template's `put your unique phrase here` → generated once; anything else → left alone.
+   - The idempotence is the point, not a refinement. This loop runs on every container start and a salt is the key every auth cookie and nonce is signed with, so rewriting a live one logs every user out. That is what the deployed sites suffered, and why contentreich-wordpress deleted the salt defines from its own `wp-config.php` to defend itself. A `wp-config.php` with no salt defines must therefore stay untouched — that is a cross-repo contract, covered by `test/30-entrypoint.sh`.
+   - `set_config()` uses **no backreferences and no `\s`**. The original regex used both, which are GNU sed; this image is Alpine, so `sed` is busybox, which does not implement backreferences inside an ERE pattern — the substitution matched nothing and the entire salt rewrite was a silent no-op for as long as the image has been on Alpine. Every fresh install therefore ran with the literal placeholder as all eight secrets. Reduced: `echo xx | sed -r 's/(x)\1/M/'` prints `xx`.
 6. Regenerates `/etc/ssmtp/ssmtp.conf` from scratch (mailhub is hardcoded to host `smtp`; `SMTP_DOMAIN` sets the rewrite domain).
 7. Optionally remaps `www-data` to `WWW_UID`/`WWW_GID` (dev UID matching for bind mounts), chowns `/var/log/www`, then `exec "$@"` (default `php-fpm`).
    - The remap is skipped when `www-data` already holds the requested id, so the production case (`WWW_UID=82`) runs no `usermod` at all.
@@ -48,7 +79,7 @@ There is no test suite — `.github/workflows/test.yml` only echoes `make test`,
 
 ## CI (`.github/workflows/`)
 
-- `release.yml` — two jobs: `build` (matrix) → `merge`. Pushes to `ghcr.io/deas/wordpress` with tags `latest` and `8.1.$(git rev-list --count HEAD)-fpm-alpine`, always as a `linux/amd64` + `linux/arm64` manifest list. The version prefix (`8.1.`) is hardcoded in the workflow _and_ in the Makefile's `IMAGE`; bumping the PHP base means editing both plus the `Dockerfile` `FROM`.
+- `release.yml` — two jobs: `build` (matrix) → `merge`. Pushes to `ghcr.io/deas/wordpress` with tags `latest` and `8.5.$(git rev-list --count HEAD)-fpm-alpine`, always as a `linux/amd64` + `linux/arm64` manifest list. The version prefix (`8.5.`) is hardcoded in the workflow _and_ in the Makefile's `IMAGE`; bumping the PHP base means editing both plus the `Dockerfile` `FROM`.
   - Each arch builds on its own **native** runner (`ubuntu-latest`, `ubuntu-24.04-arm` — free because the repo is public), so nothing is QEMU-emulated. Adding an arch means adding a `{platform, runner}` pair to `jobs.build.strategy.matrix.include`.
   - `build` legs tag nothing. Each pushes an untagged image (`push-by-digest=true`) and uploads its digest as an artifact; `merge` collects them and does one `docker buildx imagetools create` to write the manifest list. The tags are therefore written once, atomically, from exactly the digests that run produced — no appending to an existing list, no ordering constraints. `merge` is skipped if either leg fails, so a single-arch image is never tagged.
   - GHA layer cache is scoped per platform (`scope=linux-amd64` / `scope=linux-arm64`); the legs never share a cache.

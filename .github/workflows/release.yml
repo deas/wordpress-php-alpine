@@ -105,7 +105,9 @@ jobs:
       - name: Prepare
         id: prep
         run: |
-          build_id=8.1.$(git rev-list --count HEAD)-fpm-alpine
+          # Keep this PHP prefix in step with the Dockerfile FROM and the
+          # Makefile IMAGE — three places, nothing enforces they agree.
+          build_id=8.5.$(git rev-list --count HEAD)-fpm-alpine
           echo "VERSION=${build_id}" >> "$GITHUB_OUTPUT"
         #run: |
         #  VERSION=sha-${GITHUB_SHA::8}

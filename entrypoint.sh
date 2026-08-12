@@ -113,12 +113,33 @@ fi
 # TODO handle WordPress upgrades magically in the same way, but only if wp-includes/version.php's $wp_version is less
 # than /usr/share/wordpress/wp-includes/version.php's $wp_version
 
+WP_CONFIG="${EXTRACT_DIR}/wordpress/wp-config.php"
+
+# Must match the placeholder wp-config-template.php ships. The two are a pair:
+# change one and change the other, or first-boot salt generation stops firing.
+SALT_PLACEHOLDER="put your unique phrase here"
+
 set_config() {
     key="$1"
     value="$2"
     php_escaped_value="$(php -r 'var_export($argv[1]);' "$value")"
     sed_escaped_value="$(echo "$php_escaped_value" | sed 's/[\/&]/\\&/g')"
-    sed -ri "s/((['\"])$key\2\s*,\s*)(['\"]).*\3/\1$sed_escaped_value/" "${EXTRACT_DIR}/wordpress/wp-config.php"
+    # NO BACKREFERENCES IN THE PATTERN, and no \s. This used to read
+    #     s/((['\"])$key\2\s*,\s*)(['\"]).*\3/
+    # which is GNU sed. This image is Alpine, so sed is busybox, which does not
+    # implement backreferences inside an ERE pattern — the substitution matched
+    # nothing and the whole salt rewrite had been a silent no-op. Reduced:
+    #     echo xx | sed -r 's/(x)\1/M/'   -> xx        (busybox: no match)
+    #     echo ab | sed -r 's/(a)b/M/'    -> M         (plain ERE is fine)
+    # var_export supplies the surrounding quotes, so the pattern consumes the
+    # old value's quotes too.
+    sed -ri "s/(['\"]$key['\"][[:space:]]*,[[:space:]]*)['\"].*['\"]/\1$sed_escaped_value/" \
+        "$WP_CONFIG"
+}
+
+# Is this key still carrying the template's placeholder, i.e. never set?
+is_unset_salt() {
+    grep -qE "^[[:space:]]*define\([[:space:]]*['\"]$1['\"].*${SALT_PLACEHOLDER}" "$WP_CONFIG"
 }
 
 # allow any of these "Authentication Unique Keys and Salts." to be specified via
@@ -128,12 +149,22 @@ UNIQUES="AUTH_KEY SECURE_AUTH_KEY LOGGED_IN_KEY NONCE_KEY AUTH_SALT SECURE_AUTH_
 
 echo "Setting values wp-config.php"
 
+# THIS LOOP MUST BE IDEMPOTENT. It runs on every container start, and a salt is
+# not a setting — it is the key every auth cookie and nonce is signed with.
+# Rewriting a live one invalidates all of them and logs every user out, which is
+# exactly what happened on the deployed sites and why contentreich-wordpress
+# ended up deleting the defines from its own wp-config.php to defend itself.
+#
+# So, per key:
+#   WORDPRESS_<KEY> set   -> apply it, every boot. Explicit intent, and it is
+#                            the only way changing the variable changes the file.
+#   still the placeholder -> generate once. This is first boot.
+#   anything else         -> LEAVE IT ALONE. Already established, ours or not.
 for unique in ${UNIQUES}; do
     eval unique_value=\$WORDPRESS_$unique
-    if [ "$unique_value" ]; then
+    if [ -n "$unique_value" ]; then
         set_config "$unique" "$unique_value"
-    else
-        # if not specified, let's generate a random value
+    elif is_unset_salt "$unique"; then
         set_config "$unique" "$(head -c1m /dev/urandom | sha1sum | cut -d' ' -f1)"
     fi
 done
@@ -191,6 +222,39 @@ fi
 if [ -n "${WWW_GID}" ] && [ "${WWW_GID}" != "$(id -g www-data)" ] ; then
     groupmod -o -g "${WWW_GID}" www-data
 fi
+
+# Xdebug: present in the image, loaded only if asked for HERE, at container
+# creation. The Dockerfile keeps the ini out of conf.d precisely so this is the
+# only switch.
+#
+# MIND THE TEST. This deliberately matches an explicit allow-list rather than
+# "is the variable non-empty", because docker-compose.yml passes
+# PHP_XDEBUG_ENABLED=0 as its DEFAULT — a `[ -n "$PHP_XDEBUG_ENABLED" ]` here
+# would load the debugger on every production container. Same family of trap as
+# the (bool) getenv() one in wp-config-template.php, where '0' is true.
+#
+# Mode and client host/port do NOT need a variable of ours: Xdebug 3 reads
+# XDEBUG_MODE and XDEBUG_CONFIG from the environment itself, e.g.
+#   XDEBUG_MODE=profile
+#   XDEBUG_CONFIG="client_host=host.docker.internal client_port=9003"
+# PHP_XDEBUG_REMOTE_PORT is honoured below only because the compose files
+# already carry it; XDEBUG_CONFIG wins over it, as it is applied later.
+case "${PHP_XDEBUG_ENABLED}" in
+    1 | true | TRUE | yes | YES | on | ON)
+        echo "Enabling xdebug (PHP_XDEBUG_ENABLED=${PHP_XDEBUG_ENABLED})"
+        cp /usr/local/etc/php/xdebug.ini.available \
+           /usr/local/etc/php/conf.d/zz-xdebug.ini
+        if [ -n "${PHP_XDEBUG_REMOTE_PORT}" ]; then
+            echo "xdebug.client_port=${PHP_XDEBUG_REMOTE_PORT}" \
+                >>/usr/local/etc/php/conf.d/zz-xdebug.ini
+        fi
+        ;;
+    *)
+        # Nothing to do: the ini is not in conf.d, so the extension is not
+        # loaded. Remove a copy left by an earlier run of this same container.
+        rm -f /usr/local/etc/php/conf.d/zz-xdebug.ini
+        ;;
+esac
 
 # Make sure php can write!
 chown -R www-data:www-data /var/log/www
