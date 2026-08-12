@@ -37,7 +37,12 @@ ENV LANG=C.UTF-8
 #   exif    free, bundled — image orientation and metadata, which the site's
 #           image plugins (ewww, wp-retina-2x, regenerate-thumbnails,
 #           contentreich-ps-img) all expect.
-#   intl    +10 MB (icu-libs). WordPress-recommended, and this is a de_DE site.
+#   intl    +10 MB (icu-libs) and a further +28 MB for icu-data-full, which is
+#           NOT optional here. Alpine's icu-libs pulls icu-data-en, i.e. English
+#           locale data only — four locales, `de` not among them — so intl loads
+#           and then formats German dates in English ("March 15, 2026"). With
+#           the full data it is "15. März 2026". Installing intl for a de_DE
+#           site and leaving it on icu-data-en buys nothing at all.
 #   imagick +26 MB (imagemagick). WordPress prefers it over GD for resizing.
 #           NOTE: Alpine 3.24 ships ImageMagick 7.1.2-27 marked "(Beta)". That
 #           is the one module here taken on a calculated risk; drop this and the
@@ -45,7 +50,7 @@ ENV LANG=C.UTF-8
 RUN set -eux; \
     apk add --no-cache \
         libzip libpng libjpeg-turbo libavif libwebp freetype \
-        icu-libs imagemagick \
+        icu-libs icu-data-full imagemagick \
         ssmtp shadow; \
     apk add --no-cache --virtual .build-deps \
         $PHPIZE_DEPS \

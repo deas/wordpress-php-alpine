@@ -27,6 +27,55 @@ for feature in 'JPEG Support' 'FreeType Support' 'WebP Support' 'AVIF Support'; 
     assert_eq "yes" "$got" "gd has $feature"
 done
 
+suite "extensions actually work (not merely loaded)"
+
+# `php -m` listing a module says nothing about whether it can do the job. Each
+# of these caught, or would have caught, a real defect:
+
+# intl loaded but useless. Alpine's icu-libs pulls icu-data-en — English locale
+# data only, four locales, no `de` — so a de_DE site gets "March 15, 2026".
+# icu-data-full is what makes it "15. März 2026". This is THE reason intl was
+# added, so assert the outcome rather than the module.
+de_date=$(php_probe '(new IntlDateFormatter("de_DE", IntlDateFormatter::LONG,
+    IntlDateFormatter::NONE, "Europe/Berlin"))->format(mktime(0,0,0,3,15,2026))')
+assert_contains "$de_date" "März" "intl formats German dates in German ($de_date)"
+
+locales=$(php_probe 'count(ResourceBundle::getLocales("")) > 100 ? "full" : "minimal"')
+assert_eq "full" "$locales" "full ICU locale data is installed, not icu-data-en"
+
+# imagick owns the media pipeline once it is present — WordPress switched from
+# GD to EWWWIO_Imagick_Editor on contentreich — so its delegates matter more
+# than its presence. Missing delegates fail at upload time, not at boot.
+for fmt in JPEG PNG GIF WEBP; do
+    got=$(php_probe "in_array('$fmt', Imagick::queryFormats()) ? 'yes' : 'no'")
+    assert_eq "yes" "$got" "imagick has the $fmt delegate"
+done
+
+# A real encode/decode/resize round trip, which is what an upload does.
+rt=$(php_probe '(function () {
+    $im = new Imagick(); $im->newImage(40, 20, new ImagickPixel("red"));
+    $im->setImageFormat("jpeg");
+    $r = new Imagick(); $r->readImageBlob($im->getImageBlob());
+    $r->resizeImage(20, 10, Imagick::FILTER_LANCZOS, 1);
+    return $r->getImageWidth() . "x" . $r->getImageHeight();
+})()')
+assert_eq "20x10" "$rt" "imagick round-trips and resizes a JPEG"
+
+# KNOWN ASYMMETRY, asserted so it stays known: gd is built --with-avif but
+# Alpine's ImageMagick has no AVIF delegate. WordPress picks an editor per mime
+# type, so AVIF still routes to GD — but if this ever flips, whoever changes it
+# should have to change this line too.
+assert_eq "no" "$(php_probe "in_array('AVIF', Imagick::queryFormats()) ? 'yes' : 'no'")" \
+    "imagick has NO AVIF delegate (gd covers AVIF instead)"
+assert_eq "yes" "$(php_probe 'gd_info()["AVIF Support"] ? "yes" : "no"')" \
+    "gd still covers AVIF"
+
+# exif is what the site's image plugins read orientation and metadata with.
+assert_eq "yes" "$(php_probe 'function_exists("exif_read_data") ? "yes" : "no"')" \
+    "exif_read_data() is callable"
+
+suite "binaries"
+
 for bin in wp ssmtp usermod groupmod curl; do
     path=$(sh_probe "command -v $bin || echo MISSING")
     assert_not_contains "$path" "MISSING" "binary present: $bin"
