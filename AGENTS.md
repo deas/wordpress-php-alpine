@@ -11,7 +11,22 @@ make                 # help (default goal), lists targets
 make docker-build    # docker build --no-cache -t deas/wordpress:8.5.wip-fpm-alpine .
 ```
 
-There is no test suite — `.github/workflows/test.yml` only echoes `make test`, and `make act-build` is a stub that runs `false`. Verification means building the image and running it against a MySQL container.
+```sh
+make test            # bats, parallel (--jobs nproc); needs docker + bats
+make test-fast       # same, minus the suite that needs a database
+bats test/20-xdebug.bats          # one file
+IMAGE=ghcr.io/deas/wordpress:latest make test   # check a published tag
+```
+
+**Tests** are bats-core under `test/`, 60 assertions in four files. They assert against an image that **already exists** and never build one, which is why the same command checks a local build and whatever is live. `make act-build` is still a `false` stub.
+
+- `10-image` extensions, gd flags, imagick delegates, ICU data, binaries, build-hygiene guards · `20-xdebug` the toggle truth table · `30-entrypoint` WP_DB_PASS guard, uid remap, ssmtp, the salt contract · `40-integration` empty volume + MariaDB → installed WordPress.
+- `bats-support` / `bats-assert` are **vendored** in `test/lib`, not installed — a suite that only runs where two helper libraries happen to be installed stops being run.
+- **Three conventions exist because breaking them produces false results, not failures:**
+  - Every probe prints a marker and only the marked line is read back. The entrypoint runs `printenv` under `set -x`, so grepping raw output for `xdebug` matches `PHP_XDEBUG_ENABLED=0` and reports the opposite of the truth.
+  - **Probes must not merge stderr.** The `set -x` trace echoes the command being exec'd, so a probe's own `printf` format appears *before* its output and extraction returns the literal `%s`. This once made "salts are stable across a restart" compare two degraded probes and pass having checked nothing.
+  - `sh_probe` bypasses the entrypoint (`--entrypoint sh`), `ep_probe` runs through it. Probing entrypoint behaviour with the former inspects an unmodified image and fails every assertion for the wrong reason.
+- What is batched and what is not is a deliberate split: checks that only **inspect** the image share one container (`setup_file`), which took `10-image` from ~57s to 1s. Anything depending on the environment a container was **created** with — the xdebug matrix, the uid remap — is one container per case and is what `--jobs` is for. `40-integration` opts out of parallelism via `BATS_NO_PARALLELIZE_WITHIN_FILE`, since its tests share a volume and build on each other.
 
 ## Architecture
 
