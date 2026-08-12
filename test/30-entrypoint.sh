@@ -39,6 +39,27 @@ assert_contains "$out" "__STARTED__" "WWW_UID=82 is a no-op, not a failure"
 uid=$(ep_probe 'id -u www-data')
 assert_eq "82" "$uid" "www-data stays 82 when WWW_UID is unset"
 
+suite "entrypoint: salts it does not own"
+
+# contentreich-wordpress ships a wp-config.php with NO salt defines at all, so
+# WordPress falls back to the salts in wp_options — stable, and the tracked file
+# never churns. That only works while this entrypoint leaves such a file alone,
+# which makes it a cross-repo contract rather than an implementation detail.
+it_tmp=$(mktemp -d)
+mkdir -p "$it_tmp/wp-includes"
+printf '<?php // present so the entrypoint does not download WordPress\n' >"$it_tmp/index.php"
+printf '<?php $wp_version = "7.0";\n' >"$it_tmp/wp-includes/version.php"
+cat >"$it_tmp/wp-config.php" <<'NOSALTS'
+<?php
+define('DB_NAME', getenv('WP_DB_NAME'));
+require_once('wp-settings.php');
+NOSALTS
+before=$(md5sum "$it_tmp/wp-config.php" | cut -d' ' -f1)
+docker run --rm -e WP_DB_PASS=probe -v "$it_tmp:/usr/share/wordpress" "$IMAGE" true >/dev/null 2>&1 || true
+after=$(md5sum "$it_tmp/wp-config.php" | cut -d' ' -f1)
+assert_eq "$before" "$after" "a wp-config.php with no salt defines is left untouched"
+rm -rf "$it_tmp"
+
 suite "entrypoint: ssmtp"
 
 # mailhub is hardcoded to the host `smtp`, which the consuming compose file

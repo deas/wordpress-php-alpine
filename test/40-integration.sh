@@ -52,8 +52,13 @@ done
 assert_eq "yes" "$it_ready" "database came up"
 
 # One helper so every call carries the same environment the deployment does.
+# Extra docker flags go in IT_ENV, because "$@" here is the CONTAINER command —
+# passing -e through it would hand the flag to the entrypoint instead.
+IT_ENV=""
 it_run() {
+    # shellcheck disable=SC2086 -- IT_ENV is deliberately word-split
     docker run --rm --network "$IT_NET" -v "$IT_VOL:/usr/share/wordpress" \
+        $IT_ENV \
         -e WP_DB_HOST=mariadb-not-used \
         -e WP_DB_NAME=wordpress \
         -e WP_DB_USER=wordpress \
@@ -80,11 +85,37 @@ has_config=$(it_run sh -c 'test -f /usr/share/wordpress/wp-config.php && echo ye
     | grep -Eo '^(yes|no)$' | head -1)
 assert_eq "yes" "$has_config" "wp-config.php created from the template"
 
-# The salt rewrite must have replaced the template's placeholders. If this ever
-# fails, every container restart logs every user out.
+# The salt rewrite must have replaced the template's placeholders. Leaving them
+# means every site installed from this image signs its auth cookies and nonces
+# with a publicly known constant.
 salts=$(it_run sh -c 'grep -c "put your unique phrase here" /usr/share/wordpress/wp-config.php || true' \
     | grep -Eo '^[0-9]+$' | head -1)
 assert_eq "0" "$salts" "salt placeholders were rewritten"
+
+# ...and must then STAY PUT. This is the assertion with teeth: the loop runs on
+# every container start, and a salt is the key every auth cookie is signed with.
+# Rewriting a live one logs every user out, which is what the deployed sites
+# actually suffered. Read the same key twice, across two separate boots.
+read_salt() {
+    it_run sh -c "grep -m1 \"define('AUTH_KEY'\" /usr/share/wordpress/wp-config.php" \
+        | grep -o "define('AUTH_KEY'.*" | head -1
+}
+salt_a=$(read_salt)
+salt_b=$(read_salt)
+assert_eq "$salt_a" "$salt_b" "salts are stable across a restart"
+assert_not_contains "$salt_a" "put your unique phrase here" "the stable value is not the placeholder"
+
+# An explicitly pinned value must win, on every boot — that is the whole point
+# of the WORDPRESS_<KEY> contract, and it was silently broken too.
+IT_ENV="-e WORDPRESS_AUTH_KEY=pinned-by-the-test"
+pinned=$(it_run sh -c "grep -m1 \"define('AUTH_KEY'\" /usr/share/wordpress/wp-config.php")
+IT_ENV=""
+assert_contains "$pinned" "pinned-by-the-test" "WORDPRESS_AUTH_KEY is applied"
+
+# And an unpinned key must not have been disturbed while that happened.
+salt_c=$(read_salt)
+assert_eq "pinned-by-the-test" "$(echo "$salt_c" | sed -n "s/.*'AUTH_KEY',[[:space:]]*'\([^']*\)'.*/\1/p")" \
+    "a pinned value persists once written"
 
 # And the real thing: a working install.
 out=$(it_run wp --allow-root core install \
