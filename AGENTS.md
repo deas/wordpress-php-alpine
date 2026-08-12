@@ -2,20 +2,34 @@
 
 ## What this is
 
-A single container image (`ghcr.io/deas/wordpress`, `php:8.1-fpm-alpine` base) that runs WordPress under PHP-FPM. There is no application code here — WordPress itself is downloaded at container start. The repo is the _execution environment_: PHP extensions, `wp-cli`, ssmtp mail, xdebug, and a boot script that provisions/repairs a WordPress install from environment variables.
+A single container image (`ghcr.io/deas/wordpress`, `php:8.5-fpm-alpine` base) that runs WordPress under PHP-FPM. There is no application code here — WordPress itself is downloaded at container start. The repo is the _execution environment_: PHP extensions, `wp-cli`, ssmtp mail, xdebug, and a boot script that provisions/repairs a WordPress install from environment variables.
 
 ## Commands
 
 ```sh
 make                 # help (default goal), lists targets
-make docker-build    # docker build --no-cache -t deas/wordpress:8.1.wip-fpm-alpine .
+make docker-build    # docker build --no-cache -t deas/wordpress:8.5.wip-fpm-alpine .
 ```
 
 There is no test suite — `.github/workflows/test.yml` only echoes `make test`, and `make act-build` is a stub that runs `false`. Verification means building the image and running it against a MySQL container.
 
 ## Architecture
 
-**Build (`Dockerfile`)** — installs gd (jpeg/freetype/webp/avif), zip, mysqli, opcache, xdebug (registered by appending `zend_extension=` to `php.ini`), and `wp` (wp-cli phar) into `/usr/local/bin`. Alpine `edge/community` is added to the repo list solely to get `usermod`/`groupmod` from `shadow`, which the entrypoint needs. `contentreich.ini` (dropped into `conf.d`) points `mysqli.default_socket` at `/var/run/mysqld/mysqld.sock` so a socket mount works.
+**Build (`Dockerfile`)** — installs gd (jpeg/freetype/webp/avif), zip, mysqli, exif, intl, imagick, xdebug, and `wp` (wp-cli phar) into `/usr/local/bin`. `contentreich.ini` (dropped into `conf.d`) points `mysqli.default_socket` at `/var/run/mysqld/mysqld.sock` so a socket mount works.
+
+Four things about this layer are load-bearing and easy to undo by accident:
+
+- **`opcache` is NOT in the ext-install list.** As of PHP 8.5 the official image compiles it in statically, so `docker-php-ext-install opcache` builds no module and fails the layer with `cp: can't stat 'modules/*'`. It is still loaded — the untouched base already reports `Zend OPcache` in `php -m`. Adding it back breaks the build outright.
+- **No `edge/community` repository.** It used to be added "as a quick hack to get usermod/groupmod from shadow", and it was a standing hazard: with edge in the list, any apk resolution may pull an edge package onto a stable base. `shadow` is in `v3.24/community`, which the base already enables.
+- **Build deps are a deleted virtual package.** The `-dev` headers used to be installed as `.persistent-deps` and never removed, so they shipped to production — weight, plus CVE surface that `cve-scan.yml` then reported against.
+- **`exif` / `intl` / `imagick` answer WordPress's own Site Health**, which listed all three as missing optional modules. `imagick` is the one taken on a calculated risk: Alpine 3.24 ships ImageMagick 7.1.2-27 marked *(Beta)*, and installing it **changes which image editor WordPress picks** — on contentreich it moved from GD to `EWWWIO_Imagick_Editor`. Back it out by dropping the module plus the `imagemagick`/`imagemagick-dev` packages.
+
+**Xdebug is present but NOT loaded by default**, and that is the whole point of how it is packaged. The build generates the ini the normal way and then moves it *out* of `conf.d` to `/usr/local/etc/php/xdebug.ini.available`; `entrypoint.sh` copies it back only when `PHP_XDEBUG_ENABLED` matches an explicit allow-list (`1|true|yes|on`, any case). It previously appended `zend_extension=` to `php.ini` itself, so production carried a loaded debugger with no way to switch it off and every PHP notice came out wrapped in a ten-frame stack trace — on stdout, where wp-cli output is parsed.
+
+- **The allow-list is not fussiness.** `docker-compose.yml` on the consuming side passes `PHP_XDEBUG_ENABLED=0` as its *default*; a `[ -n "$VAR" ]` test would load the debugger on every production container. Same family of trap as the `(bool) getenv()` one in `wp-config-template.php`, where `'0'` is true.
+- **Mode and client host/port need no variable of ours.** Xdebug 3 reads `XDEBUG_MODE` and `XDEBUG_CONFIG` from the environment itself (`XDEBUG_MODE=profile`, `XDEBUG_CONFIG="client_host=host.docker.internal client_port=9003"`). `PHP_XDEBUG_REMOTE_PORT` is honoured only because the compose files already carry it.
+- The staged ini defaults to `start_with_request=trigger`, so "enabled" does not mean "slow" — Xdebug stays dormant until a request carries `XDEBUG_TRIGGER`. Default client port is **9003** (the Xdebug 3 default, what IDEs expect), not 9000/9100.
+- An `env_file` is read when the container is **created**, so toggling needs a recreate, not a restart.
 
 **Volumes / paths** — `WORKDIR` is `/usr/share/wordpress`; `EXTRACT_DIR=..` in the entrypoint therefore resolves to `/usr/share`, and the tarball unpacks to `/usr/share/wordpress`. `${EXTRACT_DIR}/wordpress` and the working dir are the same directory — keep that in mind when editing paths. `/usr/share/wordpress` and `/var/log/www` are `VOLUME`s.
 
@@ -48,7 +62,7 @@ There is no test suite — `.github/workflows/test.yml` only echoes `make test`,
 
 ## CI (`.github/workflows/`)
 
-- `release.yml` — two jobs: `build` (matrix) → `merge`. Pushes to `ghcr.io/deas/wordpress` with tags `latest` and `8.1.$(git rev-list --count HEAD)-fpm-alpine`, always as a `linux/amd64` + `linux/arm64` manifest list. The version prefix (`8.1.`) is hardcoded in the workflow _and_ in the Makefile's `IMAGE`; bumping the PHP base means editing both plus the `Dockerfile` `FROM`.
+- `release.yml` — two jobs: `build` (matrix) → `merge`. Pushes to `ghcr.io/deas/wordpress` with tags `latest` and `8.5.$(git rev-list --count HEAD)-fpm-alpine`, always as a `linux/amd64` + `linux/arm64` manifest list. The version prefix (`8.5.`) is hardcoded in the workflow _and_ in the Makefile's `IMAGE`; bumping the PHP base means editing both plus the `Dockerfile` `FROM`.
   - Each arch builds on its own **native** runner (`ubuntu-latest`, `ubuntu-24.04-arm` — free because the repo is public), so nothing is QEMU-emulated. Adding an arch means adding a `{platform, runner}` pair to `jobs.build.strategy.matrix.include`.
   - `build` legs tag nothing. Each pushes an untagged image (`push-by-digest=true`) and uploads its digest as an artifact; `merge` collects them and does one `docker buildx imagetools create` to write the manifest list. The tags are therefore written once, atomically, from exactly the digests that run produced — no appending to an existing list, no ordering constraints. `merge` is skipped if either leg fails, so a single-arch image is never tagged.
   - GHA layer cache is scoped per platform (`scope=linux-amd64` / `scope=linux-arm64`); the legs never share a cache.

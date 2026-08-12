@@ -1,6 +1,8 @@
 .DEFAULT_GOAL := help
 HELP-DESCRIPTION-SPACING := 24
-IMAGE := deas/wordpress:8.1.wip-fpm-alpine
+# Keep this PHP prefix in step with the Dockerfile FROM and with the build_id in
+# .github/workflows/release.yml — three places, nothing enforces they agree.
+IMAGE := deas/wordpress:8.5.wip-fpm-alpine
 
 .PHONY: help docker-build act-build
 

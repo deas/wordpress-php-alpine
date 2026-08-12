@@ -192,6 +192,39 @@ if [ -n "${WWW_GID}" ] && [ "${WWW_GID}" != "$(id -g www-data)" ] ; then
     groupmod -o -g "${WWW_GID}" www-data
 fi
 
+# Xdebug: present in the image, loaded only if asked for HERE, at container
+# creation. The Dockerfile keeps the ini out of conf.d precisely so this is the
+# only switch.
+#
+# MIND THE TEST. This deliberately matches an explicit allow-list rather than
+# "is the variable non-empty", because docker-compose.yml passes
+# PHP_XDEBUG_ENABLED=0 as its DEFAULT — a `[ -n "$PHP_XDEBUG_ENABLED" ]` here
+# would load the debugger on every production container. Same family of trap as
+# the (bool) getenv() one in wp-config-template.php, where '0' is true.
+#
+# Mode and client host/port do NOT need a variable of ours: Xdebug 3 reads
+# XDEBUG_MODE and XDEBUG_CONFIG from the environment itself, e.g.
+#   XDEBUG_MODE=profile
+#   XDEBUG_CONFIG="client_host=host.docker.internal client_port=9003"
+# PHP_XDEBUG_REMOTE_PORT is honoured below only because the compose files
+# already carry it; XDEBUG_CONFIG wins over it, as it is applied later.
+case "${PHP_XDEBUG_ENABLED}" in
+    1 | true | TRUE | yes | YES | on | ON)
+        echo "Enabling xdebug (PHP_XDEBUG_ENABLED=${PHP_XDEBUG_ENABLED})"
+        cp /usr/local/etc/php/xdebug.ini.available \
+           /usr/local/etc/php/conf.d/zz-xdebug.ini
+        if [ -n "${PHP_XDEBUG_REMOTE_PORT}" ]; then
+            echo "xdebug.client_port=${PHP_XDEBUG_REMOTE_PORT}" \
+                >>/usr/local/etc/php/conf.d/zz-xdebug.ini
+        fi
+        ;;
+    *)
+        # Nothing to do: the ini is not in conf.d, so the extension is not
+        # loaded. Remove a copy left by an earlier run of this same container.
+        rm -f /usr/local/etc/php/conf.d/zz-xdebug.ini
+        ;;
+esac
+
 # Make sure php can write!
 chown -R www-data:www-data /var/log/www
 
