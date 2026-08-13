@@ -5,9 +5,19 @@ on:
   push:
     branches:
       - 'main'
+    # EVERY file that ends up inside the image, so a release happens whenever
+    # the artefact changes. This list used to name only Dockerfile and
+    # entrypoint.sh, which meant a fix to e.g. wp-config-template.php was
+    # tested, merged, and then never published — `latest` kept the old file
+    # until something unrelated happened to touch one of the two named paths.
+    # Keep it in step with the ADD lines in the Dockerfile.
     paths:
       - 'Dockerfile'
       - 'entrypoint.sh'
+      - 'wp-config-template.php'
+      - 'execute-statements-mysql.php'
+      - 'rename_site.php'
+      - 'contentreich.ini'
       - '.github/workflows/release.yml'
     #tags:
     #  - '*'
@@ -21,9 +31,14 @@ env:
   REGISTRY_IMAGE: ghcr.io/deas/wordpress
 
 jobs:
-  # One native runner per arch, no emulation. Nothing is tagged here: each leg
-  # pushes an untagged image and hands its digest to the merge job.
-  # ubuntu-24.04-arm is free for public repos.
+  # One native runner per arch, no emulation. Each leg builds, TESTS what it
+  # built, then pushes an untagged image and hands its digest to the merge job.
+  # Nothing is tagged here. ubuntu-24.04-arm is free for public repos.
+  #
+  # fail-fast stays false deliberately: if one arch goes red you still want the
+  # other's result. The cost is that a passing leg pushes its (untagged,
+  # unreferenced) digest while its sibling fails — merge is skipped, so no tag
+  # ever points at it.
   build:
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -54,7 +69,58 @@ jobs:
         uses: docker/metadata-action@v4
         with:
           images: ${{ env.REGISTRY_IMAGE }}
-      - name: Build and push by digest
+      # Built and LOADED first, not pushed. The suite then runs against this
+      # exact image, and the push below only happens if it is green — so a red
+      # test never puts layers in the registry, tagged or not.
+      #
+      # This is two build-push-action calls on purpose. `load: true` produces a
+      # local docker image but no registry digest; push-by-digest produces a
+      # digest but nothing testable. The second call re-runs against the same
+      # builder with every layer already cached, so it costs an export and a
+      # push, not a rebuild.
+      - name: Build and load for testing
+        uses: docker/build-push-action@v3
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          load: true
+          tags: deas/wordpress:ci
+          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
+
+      # bats-support and bats-assert are vendored in test/lib, so only bats
+      # itself is installed. `parallel` is what bats --jobs needs.
+      - name: Install bats
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq bats parallel
+
+      # Both legs run the full suite on their NATIVE runner, so this is also the
+      # first thing that ever tested the arm64 image. Fast suites first: a
+      # missing extension fails in ~30s rather than after a database and a
+      # WordPress download.
+      - name: Test — image, xdebug, entrypoint
+        run: IMAGE=deas/wordpress:ci SKIP_INTEGRATION=1 bats --jobs 4 --formatter tap test/
+
+      - name: Test — integration (installs WordPress against MariaDB)
+        run: IMAGE=deas/wordpress:ci bats --formatter tap test/40-integration.bats
+
+      # Was a standalone cve-scan.yml that built its own amd64 copy and ran
+      # beside the release rather than before it — so a CRITICAL finding failed
+      # its own workflow while the image shipped anyway. Here it scans the image
+      # that is about to be pushed, on both arches, and exit-code 1 stops the
+      # push. Base-image bumps are usually driven by this.
+      - name: Scan for CVEs
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: deas/wordpress:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
+      - name: Push by digest
         id: build
         uses: docker/build-push-action@v3
         with:
@@ -65,7 +131,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
-          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
       - name: Export digest
         run: |
           mkdir -p /tmp/digests
@@ -79,8 +144,10 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Single manifest list covering both arches, pushed to the real tags.
-  # Skipped if either leg failed, so a single arch image is never tagged.
+  # Single manifest list covering both arches, pushed to the real tags. This is
+  # the ONLY step that writes a tag, and it needs every build leg — which now
+  # means every leg's test run — to have succeeded. So `latest` cannot move
+  # onto an image whose suite was red, and a single-arch image is never tagged.
   merge:
     needs: build
     runs-on: ubuntu-latest

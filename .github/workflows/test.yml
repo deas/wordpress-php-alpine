@@ -1,19 +1,29 @@
 name: test
 
 on:
+  # Deliberately UNFILTERED. release.yml only runs on push to main, so on a pull
+  # request this workflow is the entire signal — it should not be possible to
+  # open a PR that skips it.
   pull_request:
+
   push:
     branches:
       - 'main'
-    # NOTE: the other two workflows filter on 'release.yml' even inside
-    # test.yml / cve-scan.yml, so edits to them trigger nothing. This list names
-    # what actually affects the test result — including test/** itself, or a
-    # broken suite could be merged without ever having run.
+    # DELIBERATELY SHORT, and not the list of "things that affect the test
+    # result" — Dockerfile, entrypoint.sh and the other files baked into the
+    # image are missing ON PURPOSE. release.yml now builds, runs this same
+    # suite against what it built, and only pushes if it is green, so on main
+    # those paths are already covered; naming them here just builds and tests
+    # amd64 a second time on the same commit.
+    #
+    # What is left is the complement: files that change the test result but
+    # never reach the image, so release.yml has no reason to care about them.
+    # test/** is here because otherwise a broken suite could be merged without
+    # ever having run.
+    #
+    # Before re-adding Dockerfile: PRs already cover it via the unfiltered
+    # trigger above, and main covers it via release.yml.
     paths:
-      - 'Dockerfile'
-      - 'entrypoint.sh'
-      - 'wp-config-template.php'
-      - 'contentreich.ini'
       - 'Makefile'
       - 'test/**'
       - '.github/workflows/test.yml'
