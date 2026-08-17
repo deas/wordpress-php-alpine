@@ -18,9 +18,11 @@ bats test/20-xdebug.bats          # one file
 IMAGE=ghcr.io/deas/wordpress:latest make test   # check a published tag
 ```
 
-**Tests** are bats-core under `test/`, 60 assertions in four files. They assert against an image that **already exists** and never build one, which is why the same command checks a local build and whatever is live. `make act-build` is still a `false` stub.
+**Tests** are bats-core under `test/`, 68 assertions in four files. They assert against an image that **already exists** and never build one, which is why the same command checks a local build and whatever is live. `make act-build` is still a `false` stub.
 
-- `10-image` extensions, gd flags, imagick delegates, ICU data, binaries, build-hygiene guards · `20-xdebug` the toggle truth table · `30-entrypoint` WP_DB_PASS guard, uid remap, ssmtp, the salt contract · `40-integration` empty volume + MariaDB → installed WordPress.
+That `IMAGE=… make test` line only works because `IMAGE` is assigned with **`?=`**. It was `:=`, and a `:=` in a Makefile beats the environment — so the documented invocation silently tested the local image, went green, and never pulled the tag it named. Keep it `?=`.
+
+- `10-image` extensions, gd flags, imagick delegates, ICU data, binaries, build-hygiene guards · `20-xdebug` the toggle truth table · `30-entrypoint` WP_DB_PASS guard, uid remap, ssmtp, the salt contract · `40-integration` empty volume + MariaDB → installed WordPress, then `wp db` against it.
 - `bats-support` / `bats-assert` are **vendored** in `test/lib`, not installed — a suite that only runs where two helper libraries happen to be installed stops being run.
 - **Three conventions exist because breaking them produces false results, not failures:**
   - Every probe prints a marker and only the marked line is read back. The entrypoint runs `printenv` under `set -x`, so grepping raw output for `xdebug` matches `PHP_XDEBUG_ENABLED=0` and reports the opposite of the truth.
@@ -32,12 +34,14 @@ IMAGE=ghcr.io/deas/wordpress:latest make test   # check a published tag
 
 **Build (`Dockerfile`)** — installs gd (jpeg/freetype/webp/avif), zip, mysqli, exif, intl, imagick, xdebug, and `wp` (wp-cli phar) into `/usr/local/bin`. `contentreich.ini` (dropped into `conf.d`) points `mysqli.default_socket` at `/var/run/mysqld/mysqld.sock` so a socket mount works.
 
-Four things about this layer are load-bearing and easy to undo by accident:
+Six things about this layer are load-bearing and easy to undo by accident:
 
 - **`opcache` is NOT in the ext-install list.** As of PHP 8.5 the official image compiles it in statically, so `docker-php-ext-install opcache` builds no module and fails the layer with `cp: can't stat 'modules/*'`. It is still loaded — the untouched base already reports `Zend OPcache` in `php -m`. Adding it back breaks the build outright.
 - **No `edge/community` repository.** It used to be added "as a quick hack to get usermod/groupmod from shadow", and it was a standing hazard: with edge in the list, any apk resolution may pull an edge package onto a stable base. `shadow` is in `v3.24/community`, which the base already enables.
 - **Build deps are a deleted virtual package.** The `-dev` headers used to be installed as `.persistent-deps` and never removed, so they shipped to production — weight, plus CVE surface that `cve-scan.yml` then reported against.
 - **`exif` / `intl` / `imagick` answer WordPress's own Site Health**, which listed all three as missing optional modules. `imagick` is the one taken on a calculated risk: Alpine 3.24 ships ImageMagick 7.1.2-27 marked *(Beta)*, and installing it **changes which image editor WordPress picks** — on contentreich it moved from GD to `EWWWIO_Imagick_Editor`. Back it out by dropping the module plus the `imagemagick`/`imagemagick-dev` packages.
+- **`mariadb-client` is there for wp-cli, and `mysqli` does not substitute for it.** The whole `wp db` family (`export`, `import`, `cli`, `query`, `check`, `optimize`, `repair`) shells **out** to the `mysql`/`mysqldump`/`mysqlcheck` binaries rather than using the PHP connection, so without the package wp-cli shipped with a command group that could not run — `wp cli info` printed `MySQL binary:` followed by nothing. Costs ~39 MB (`mariadb-client` 37 + `mariadb-common` 2; every other dependency is already pulled in by the base or by `shadow`). Eight ~4.7 MB binaries are nearly all of that and only three are used here, but **do not prune files out of an installed apk package** to reclaim the rest: apk restores them on the next upgrade, so the saving reverts silently while the pruning line stays in the `Dockerfile` looking effective. Client major tracks the server (`mariadb:11`), which is what keeps `mysqldump` output loadable; `10-image` asserts both the binaries and that wp-cli *resolves* one, and `40-integration` runs `wp db query/export/check` against the live database.
+- **The wp-cli download is `curl -f` and is smoke-tested in the same layer.** Without `--fail`, curl exits `0` on an HTTP error and writes the error **body** to the output file — a transient GitHub 429 installs a 199-byte "Too Many Requests" page as `/usr/local/bin/wp`: executable, present, and dead. That is not hypothetical, it happened while adding `mariadb-client`, and the build went green. `--retry-all-errors` makes curl retry the 429 instead of merely refusing it, and `wp --allow-root --version` in the same `RUN` fails the **layer**, so a bad download cannot reach a test or a registry. Note which test caught it and which did not: `binary present: wp` is `command -v` and passed, "wp-cli actually runs, not merely exists" is what went red.
 
 **Xdebug is present but NOT loaded by default**, and that is the whole point of how it is packaged. The build generates the ini the normal way and then moves it *out* of `conf.d` to `/usr/local/etc/php/xdebug.ini.available`; `entrypoint.sh` copies it back only when `PHP_XDEBUG_ENABLED` matches an explicit allow-list (`1|true|yes|on`, any case). It previously appended `zend_extension=` to `php.ini` itself, so production carried a loaded debugger with no way to switch it off and every PHP notice came out wrapped in a ten-frame stack trace — on stdout, where wp-cli output is parsed.
 
@@ -75,7 +79,18 @@ Four things about this layer are load-bearing and easy to undo by accident:
 ## Known breakage (verify before relying on these paths)
 
 - `entrypoint.sh` invokes `${SRC_DIR}/rename.site.php`; the file is `rename_site.php`. The import-rename branch cannot work as written.
-- `execute-statements-mysql.php` uses the `mysql_*` API, removed in PHP 7 — it fatals on this image. Its argument order also disagrees with the call site: the script reads `$argv[1..4]` as host, _user_, _pass_, _db_, while the entrypoint passes host, _db_, _user_, _pass_.
+- `execute-statements-mysql.php` uses the `mysql_*` API, removed in PHP 7 — it fatals on this image. Its argument order also disagrees with the call site: the script reads `$argv[1..4]` as host, _user_, _pass_, _db_, while the entrypoint passes host, _db_, _user_, _pass_. Now that `mariadb-client` is in the image, the whole script is replaceable by piping the dump into `mysql` — which is what it was hand-rolling — but that has not been done, and the import path is still untested either way.
+
+## Planned work
+
+Two places, on purpose. `TODO.md` holds work that is not tied to one line —
+the largest item being replacing the vendored wp-cli with the upstream
+`wordpress:cli` image run as a sidecar, at which point both `/usr/local/bin/wp`
+and `mariadb-client` come out of this image. Anything that *is* tied to one line
+stays as a `TODO`/`FIXME` comment on that line in `Dockerfile` /
+`entrypoint.sh`, where whoever edits the line will actually see it — **leave
+those where they are.** `grep -rn 'TODO\|FIXME'` plus `TODO.md` is the whole
+picture. Nothing in either is in flight; this section is a pointer, not a status.
 
 ## CI (`.github/workflows/`)
 

@@ -10,11 +10,13 @@ setup_file() {
 emit php_version   "$(php -r 'echo PHP_VERSION;')"
 emit modules       "$(php -m | tr '\n' ' ')"
 emit wp_version    "$(wp --allow-root --version 2>/dev/null | grep -o 'WP-CLI [0-9.]*')"
+emit wp_mysql_bin  "$(wp --allow-root cli info 2>/dev/null | sed -n 's/^MySQL binary:[[:space:]]*//p')"
+emit wp_mysql_ver  "$(wp --allow-root cli info 2>/dev/null | sed -n 's/^MySQL version:[[:space:]]*//p')"
 emit dev_pkgs      "$(apk info 2>/dev/null | grep -c -- '-dev$' || true)"
 emit repos         "$(tr '\n' ' ' </etc/apk/repositories)"
 emit opcache_ini   "$(tr '\n' ' ' </usr/local/etc/php/conf.d/opcache-recommended.ini)"
 
-for bin in wp ssmtp usermod groupmod curl; do
+for bin in wp mysql mysqldump mysqlcheck ssmtp usermod groupmod curl; do
     emit "bin_$bin" "$(command -v "$bin" >/dev/null 2>&1 && echo yes || echo no)"
 done
 
@@ -80,6 +82,9 @@ setup() { load test_helper; }
 @test "gd has avif support" { assert_equal "$(batch_get gd_avif)" yes; }
 
 @test "binary present: wp" { assert_equal "$(batch_get bin_wp)" yes; }
+@test "binary present: mysql" { assert_equal "$(batch_get bin_mysql)" yes; }
+@test "binary present: mysqldump" { assert_equal "$(batch_get bin_mysqldump)" yes; }
+@test "binary present: mysqlcheck" { assert_equal "$(batch_get bin_mysqlcheck)" yes; }
 @test "binary present: ssmtp" { assert_equal "$(batch_get bin_ssmtp)" yes; }
 @test "binary present: usermod" { assert_equal "$(batch_get bin_usermod)" yes; }
 @test "binary present: groupmod" { assert_equal "$(batch_get bin_groupmod)" yes; }
@@ -87,6 +92,21 @@ setup() { load test_helper; }
 
 @test "wp-cli actually runs, not merely exists" {
     assert_regex "$(batch_get wp_version)" '^WP-CLI [0-9]'
+}
+
+# The one with teeth: `command -v mysql` above says a file exists, this says
+# wp-cli FOUND it. The whole `wp db` family shells out to these binaries, and
+# before mariadb-client was installed this line read "MySQL binary:" followed by
+# nothing — wp-cli present, `wp db export` dead.
+@test "wp-cli resolves a mysql binary" {
+    assert_regex "$(batch_get wp_mysql_bin)" '^/'
+}
+
+# Client major must track the server the stack runs (mariadb:11, as
+# 40-integration pins). A mysqldump from a client a major behind writes output
+# the server will not load, which surfaces at restore time, not at dump time.
+@test "the mysql client is MariaDB 11.x" {
+    assert_regex "$(batch_get wp_mysql_ver)" '11\.[0-9]+\.[0-9]+-MariaDB'
 }
 
 # --- extensions actually work, not merely load -------------------------------

@@ -47,10 +47,45 @@ ENV LANG=C.UTF-8
 #           NOTE: Alpine 3.24 ships ImageMagick 7.1.2-27 marked "(Beta)". That
 #           is the one module here taken on a calculated risk; drop this and the
 #           imagemagick/imagemagick-dev packages to back it out.
+#
+# mariadb-client is here for wp-cli, not for us. The `mysqli` extension only
+# gets PHP a connection; the whole `wp db` family (export, import, cli, query,
+# check, optimize, repair) shells OUT to the mysql/mysqldump/mysqlcheck
+# binaries, so without them wp-cli ships with a command group that cannot run.
+# `wp cli info` said it plainly on the image before this: "MySQL binary:" empty.
+# It now resolves /usr/bin/mariadb — the mysql* names are symlinks onto the
+# mariadb* ones, which is what wp-cli's detection follows.
+#
+# +39 MB (mariadb-client 37 MB, mariadb-common 2 MB; every other dependency is
+# already pulled in by the base or by shadow). That is real weight, and it buys
+# `wp db export` on an image whose reason to carry wp-cli at all is operating a
+# site. Eight ~4.7 MB binaries make up nearly all of it and only three are ever
+# used here, but do NOT prune files out of an installed apk package to reclaim
+# the rest: apk restores them on the next upgrade of the package, so the saving
+# silently reverts while the pruning line stays in the Dockerfile looking
+# effective.
+#
+# 11.x client against the mariadb:11 server the suite runs — same major, which
+# is what keeps mysqldump's output loadable.
+#
+# TODO: wp-cli is expected to leave this image entirely — the plan is to run the
+# upstream `wordpress:cli` image as a sidecar against the shared volume, at which
+# point this download AND the mariadb-client package above both come back out.
+# Until then it stays exactly as it is. TODO.md has what blocks the move.
+#
+# -f ON THE wp-cli DOWNLOAD, and the smoke check after it. Without --fail, curl
+# exits 0 on an HTTP error and writes the error BODY to the output file, so a
+# transient GitHub 429 installs a 199-byte "Too Many Requests" page as
+# /usr/local/bin/wp — executable, present, and dead. The build went green that
+# way while writing this layer; nothing failed until the suite ran and
+# `wp --version` came back as a shell syntax error. --retry-all-errors makes
+# curl retry the 429 rather than just refusing it, and `wp --version` here fails
+# the LAYER, so a bad download can never reach a test or a registry.
 RUN set -eux; \
     apk add --no-cache \
         libzip libpng libjpeg-turbo libavif libwebp freetype \
         icu-libs icu-data-full imagemagick \
+        mariadb-client \
         ssmtp shadow; \
     apk add --no-cache --virtual .build-deps \
         $PHPIZE_DEPS \
@@ -63,9 +98,11 @@ RUN set -eux; \
     docker-php-ext-enable imagick; \
     pecl install xdebug-3.5.3; \
     pecl clear-cache; \
-    curl -sSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
+    curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors \
+        https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
         -o /usr/local/bin/wp; \
     chmod 755 /usr/local/bin/wp; \
+    wp --allow-root --version; \
     apk del --no-network .build-deps; \
     php -m
 

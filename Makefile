@@ -2,7 +2,11 @@
 HELP-DESCRIPTION-SPACING := 26
 # Keep this PHP prefix in step with the Dockerfile FROM and with the build_id in
 # .github/workflows/release.yml — three places, nothing enforces they agree.
-IMAGE := deas/wordpress:8.5.wip-fpm-alpine
+# ?= and NOT :=. A Makefile variable assigned with := beats the environment, so
+# with `:=` here the documented `IMAGE=ghcr.io/deas/wordpress:latest make test`
+# silently tested the LOCAL image instead — the run goes green and the tag you
+# meant to check was never pulled, let alone asserted against.
+IMAGE ?= deas/wordpress:8.5.wip-fpm-alpine
 
 .PHONY: help build docker-build act-build \
         test test-fast test-serial \

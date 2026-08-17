@@ -155,3 +155,31 @@ setup() {
     run it_run wp --allow-root core is-installed
     assert_success
 }
+
+# `wp db` is the reason mariadb-client is in the image, and it is the one part
+# of wp-cli that mysqli cannot cover: these subcommands shell out to the
+# mysql/mysqldump/mysqlcheck binaries rather than using the PHP connection. So
+# assert them against a real server — presence of the binary is 10-image's job,
+# this is whether it can actually talk. Must run after core install; the tests
+# in this file share one database and go in order.
+@test "wp db query reaches the database" {
+    run it_run wp --allow-root db query 'SELECT option_value FROM wp_options WHERE option_name = "blogname"'
+    assert_success
+    assert_output --partial CI
+}
+
+# The dump path, i.e. mysqldump. `-` sends it to stdout, which it shares with
+# the entrypoint's set -x trace — hence a partial match on something only a dump
+# contains, not a whole-output comparison.
+@test "wp db export produces a dump" {
+    run it_run wp --allow-root db export -
+    assert_success
+    assert_output --partial "CREATE TABLE"
+    assert_output --partial "wp_options"
+}
+
+@test "wp db check runs mysqlcheck against the schema" {
+    run it_run wp --allow-root db check
+    assert_success
+    assert_output --partial "wordpress.wp_options"
+}
