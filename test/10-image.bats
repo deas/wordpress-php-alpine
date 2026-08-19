@@ -20,6 +20,13 @@ for bin in wp mysql mysqldump mysqlcheck ssmtp usermod groupmod curl; do
     emit "bin_$bin" "$(command -v "$bin" >/dev/null 2>&1 && echo yes || echo no)"
 done
 
+# Ask each client binary what it would be started with, THE WAY WP-CLI ASKS IT.
+# --no-defaults is not decoration here; see the test below.
+for b in mariadb mariadb-dump mariadb-check mysql mysqldump mysqlcheck; do
+    emit "tlsflag_$b" "$($b --no-defaults --print-defaults 2>/dev/null |
+        grep -c -- '--ssl-verify-server-cert=0')"
+done
+
 # PHP prints its own marker lines — one less layer of quoting than routing the
 # values back out through emit.
 php -r '
@@ -89,6 +96,31 @@ setup() { load test_helper; }
 @test "binary present: usermod" { assert_equal "$(batch_get bin_usermod)" yes; }
 @test "binary present: groupmod" { assert_equal "$(batch_get bin_groupmod)" yes; }
 @test "binary present: curl" { assert_equal "$(batch_get bin_curl)" yes; }
+
+# A ~0s canary for mysql-tls-wrapper.sh. 41-mysql is the real proof — it stands
+# up a MySQL server and makes the connection actually succeed — but this catches
+# a dropped wrapper on every run, including the ones with SKIP_INTEGRATION set.
+#
+# --no-defaults IS THE WHOLE POINT OF THIS PROBE, and asking without it is a
+# test that passes while the image is broken. The first attempt at this fix was
+# an option file in /etc/my.cnf.d, and `mariadb --print-defaults` reports its
+# flag happily — while every `wp db` command still failed, because wp-cli
+# prepends --no-defaults and no option file is read. Measured both ways on
+# 2026-08-19: with the option file mounted into the unfixed image this probe
+# returns 0 and the plain one returns 1. The plain one would have certified the
+# broken build.
+#
+# `--help --verbose` is the other tempting shortcut and is worse: it reports
+# `ssl-verify-server-cert TRUE` even through the WORKING wrapper, because it
+# reflects defaults and option files but not the command line. It fails in the
+# opposite direction — a red test on a good image.
+@test "every client binary carries --ssl-verify-server-cert=0 under --no-defaults" {
+    local b
+    for b in mariadb mariadb-dump mariadb-check mysql mysqldump mysqlcheck; do
+        [ "$(batch_get "tlsflag_$b")" = 1 ] ||
+            fail "$b would not disable certificate verification — wp db will fail against MySQL"
+    done
+}
 
 @test "wp-cli actually runs, not merely exists" {
     assert_regex "$(batch_get wp_version)" '^WP-CLI [0-9]'
