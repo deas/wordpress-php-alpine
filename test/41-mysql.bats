@@ -61,20 +61,47 @@ setup_file() {
         "${MYSQL_IMAGE:-mysql:8.0}" \
         --default-authentication-plugin=mysql_native_password >/dev/null
 
+    # READINESS, AND NOT `mysqladmin ping`. The official entrypoint initializes
+    # the data directory against a TEMPORARY server started with
+    # --skip-networking, on the same socket. `mysqladmin ping` therefore answers
+    # "alive" from that temporary server — measured 3s before the real one
+    # accepts a TCP connection, and longer on a runner that has just written a
+    # fresh image to disk. Everything below reaches the database over the docker
+    # network, so that window broke setup_file in CI.
+    #
+    # Probe what the tests actually use: TCP, the wordpress user, the wordpress
+    # schema. That is false until networking is on AND the entrypoint has
+    # created MYSQL_USER/MYSQL_DATABASE.
     local i=0
     while [ "$i" -lt 90 ]; do
-        docker exec "$MY_DB" mysqladmin ping -uroot -proot --silent >/dev/null 2>&1 && break
+        docker exec "$MY_DB" mysql -h127.0.0.1 -uwordpress -pwordpress \
+            -e 'SELECT 1' wordpress >/dev/null 2>&1 && break
         i=$((i + 1))
         sleep 1
     done
-    if [ "$i" -ge 90 ]; then echo "mysql did not come up" >&2; return 1; fi
+    if [ "$i" -ge 90 ]; then
+        echo "mysql did not come up; last lines of its log:" >&2
+        docker logs --tail 20 "$MY_DB" >&2 2>&1 || true
+        return 1
+    fi
 
     # wp db needs a schema to talk about, and these subcommands are the point of
     # the file — so install once here rather than spending a test on it.
-    my_run wp --allow-root core version >/dev/null 2>&1
-    my_run wp --allow-root core install --url=http://localhost --title=CI \
+    #
+    # KEEP THE OUTPUT. bats fails setup_file on a non-zero status and then skips
+    # every test in the file, so `>/dev/null 2>&1` here bought a CI run that
+    # said only "Executed 11 instead of expected 16 tests" and never why.
+    local out
+    if ! out=$(my_run wp --allow-root core version 2>&1); then
+        printf 'setup_file: wp core version failed\n%s\n' "$out" >&2
+        return 1
+    fi
+    if ! out=$(my_run wp --allow-root core install --url=http://localhost --title=CI \
         --admin_user=ci --admin_password=ci --admin_email=ci@example.test \
-        --skip-email >/dev/null 2>&1
+        --skip-email 2>&1); then
+        printf 'setup_file: wp core install failed\n%s\n' "$out" >&2
+        return 1
+    fi
 }
 
 teardown_file() {
