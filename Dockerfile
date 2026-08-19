@@ -153,6 +153,26 @@ ADD execute-statements-mysql.php  /execute-statements-mysql.php
 ADD rename_site.php /rename_site.php
 ADD contentreich.ini /usr/local/etc/php/conf.d
 
+# Shadow the six client binaries wp-cli shells out to, so they do not verify the
+# server certificate — without which every `wp db` subcommand fails against the
+# MySQL 8 the deployed sites run. /usr/local/bin precedes /usr/bin in PATH, and
+# the wrapper dispatches on its own basename, so one file serves all six names.
+# The script carries the reasoning, including why an option file cannot work.
+#
+# The smoke test is in the same layer on purpose, same as the wp-cli download
+# above: a wrapper that execs the wrong path is executable, present and dead,
+# and would otherwise surface as a confusing failure in the suite rather than
+# as a red build.
+ADD mysql-tls-wrapper.sh /usr/local/bin/mariadb
+RUN set -eux; \
+    chmod 0755 /usr/local/bin/mariadb; \
+    for n in mariadb-dump mariadb-check mysql mysqldump mysqlcheck; do \
+        ln -s mariadb /usr/local/bin/"$n"; \
+    done; \
+    mariadb --version | grep -q MariaDB; \
+    mysqldump --version | grep -q MariaDB; \
+    mysqlcheck --version | grep -q MariaDB
+
 # TODO: Should probably not be a volume so we can also move images around
 VOLUME /usr/share/wordpress
 VOLUME /var/log/www

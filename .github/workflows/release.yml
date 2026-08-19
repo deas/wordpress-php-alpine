@@ -18,6 +18,7 @@ on:
       - 'execute-statements-mysql.php'
       - 'rename_site.php'
       - 'contentreich.ini'
+      - 'mysql-tls-wrapper.sh'
       - '.github/workflows/release.yml'
     #tags:
     #  - '*'
