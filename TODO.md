@@ -51,6 +51,16 @@ Blockers, each needing an answer before starting:
       why that one is not negotiable.
 - [ ] It is a change to the **consuming compose files** (contentreich-wordpress),
       not only to this repo, so it cannot land here alone.
+- [ ] **The MySQL TLS wrapper has to follow.** `wordpress:cli` ships
+      `mariadb-client` too, so it inherits the same defect this image just
+      fixed: MariaDB's client verifies the server certificate by default, the
+      deployed sites run MySQL 8 with an auto-generated self-signed CA, and
+      every `wp db` subcommand dies on it. Dropping `mysql-tls-wrapper.sh`
+      together with `/usr/local/bin/wp` would silently reintroduce it — and
+      `41-mysql` would catch that only if it is rewritten alongside
+      `40-integration` in the blocker above, since it too runs `wp` INSIDE the
+      image under test. Using `wordpress:cli` "AS IS" is therefore not quite
+      free; it needs the wrapper baked in or mounted.
 
 ## Build
 

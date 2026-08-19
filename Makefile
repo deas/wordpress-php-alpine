@@ -10,7 +10,7 @@ IMAGE ?= deas/wordpress:8.5.wip-fpm-alpine
 
 .PHONY: help build docker-build act-build \
         test test-fast test-serial \
-        test-image test-xdebug test-entrypoint test-integration \
+        test-image test-xdebug test-entrypoint test-integration test-mysql \
         test-list test-env test-clean retest \
         shell shell-ep
 
@@ -86,8 +86,14 @@ test-xdebug: ## Only 20-xdebug: the enable/disable truth table
 test-entrypoint: ## Only 30-entrypoint: uid remap, ssmtp, the salt contract
 	$(BATS_RUN) $(TEST_DIR)/30-entrypoint.bats
 
-test-integration: ## Only 40-integration: empty volume + MariaDB -> installed WP
-	$(BATS_RUN) $(TEST_DIR)/40-integration.bats
+# CI DOES NOT RUN THESE any more (2026-08-19, GitHub capacity workaround — see
+# the gated step in .github/workflows/test.yml). Until that is reverted, running
+# them locally before you push is the only place they run at all.
+test-integration: ## The database-backed suites: MariaDB + MySQL. NOT run by CI
+	$(BATS_RUN) $(TEST_DIR)/40-integration.bats $(TEST_DIR)/41-mysql.bats
+
+test-mysql: ## Only 41-mysql: wp db against MySQL, which is what live runs
+	$(BATS_RUN) $(TEST_DIR)/41-mysql.bats
 
 retest: build test-fast ## Cached rebuild, then the fast suites — the tight loop
 
