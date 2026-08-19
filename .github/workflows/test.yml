@@ -1,6 +1,13 @@
 name: test
 
 on:
+  workflow_dispatch:
+    inputs:
+      run_integration:
+        description: 'Run the database-backed suites (40-integration, 41-mysql)'
+        type: boolean
+        default: false
+
   # Deliberately UNFILTERED. release.yml only runs on push to main, so on a pull
   # request this workflow is the entire signal — it should not be possible to
   # open a PR that skips it.
@@ -50,5 +57,23 @@ jobs:
       - name: Test — image, xdebug, entrypoint
         run: IMAGE=deas/wordpress:ci SKIP_INTEGRATION=1 bats --jobs 4 --formatter tap test/
 
-      - name: Test — integration (installs WordPress against MariaDB)
-        run: IMAGE=deas/wordpress:ci bats --formatter tap test/40-integration.bats
+      # DATABASE-BACKED SUITES ARE OFF IN CI, 2026-08-19, as a deliberate
+      # workaround for GitHub capacity problems. They are the most outage-prone
+      # thing here: each file pulls a server image and runs three containers
+      # against a docker network, so they are where a flaky runner shows up
+      # first. RUN THEM LOCALLY — `make test` runs everything, `make
+      # test-integration` runs just these two.
+      #
+      # TWO WAYS BACK ON, neither needing a commit: set the repository variable
+      # RUN_INTEGRATION to 1, or dispatch this workflow with run_integration
+      # checked. Deleting the `if:` is the third and is what should happen once
+      # GitHub is healthy again.
+      #
+      # WHAT THIS COSTS, and it is not nothing: `wp db` reaching a real server
+      # is exactly the assertion that was missing when the MySQL TLS defect
+      # shipped. The 10-image canary still runs in the fast step above and
+      # still catches a dropped wrapper, but nothing in CI now proves a
+      # connection actually succeeds. Treat a green CI as weaker than it was.
+      - name: Test — integration (database-backed; off during the GitHub capacity workaround)
+        if: vars.RUN_INTEGRATION == '1' || inputs.run_integration
+        run: IMAGE=deas/wordpress:ci bats --formatter tap test/40-integration.bats test/41-mysql.bats
