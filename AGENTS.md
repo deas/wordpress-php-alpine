@@ -18,7 +18,7 @@ bats test/20-xdebug.bats          # one file
 IMAGE=ghcr.io/deas/wordpress:latest make test   # check a published tag
 ```
 
-**Tests** are bats-core under `test/`, 75 assertions in five files. They assert against an image that **already exists** and never build one, which is why the same command checks a local build and whatever is live. `make act-build` is still a `false` stub.
+**Tests** are bats-core under `test/`, 76 assertions in five files. They assert against an image that **already exists** and never build one, which is why the same command checks a local build and whatever is live. `make act-build` is still a `false` stub.
 
 That `IMAGE=… make test` line only works because `IMAGE` is assigned with **`?=`**. It was `:=`, and a `:=` in a Makefile beats the environment — so the documented invocation silently tested the local image, went green, and never pulled the tag it named. Keep it `?=`.
 
@@ -33,7 +33,7 @@ That `IMAGE=… make test` line only works because `IMAGE` is assigned with **`?
 
 ## Architecture
 
-**Build (`Dockerfile`)** — installs gd (jpeg/freetype/webp/avif), zip, mysqli, exif, intl, imagick, xdebug, and `wp` (wp-cli phar) into `/usr/local/bin`. `contentreich.ini` (dropped into `conf.d`) points `mysqli.default_socket` at `/var/run/mysqld/mysqld.sock` so a socket mount works.
+**Build (`Dockerfile`)** — installs gd (jpeg/freetype/webp/avif), zip, mysqli, exif, intl, imagick, xdebug, and `wp` (wp-cli phar) into `/usr/local/bin`. `contentreich.ini` (dropped into `conf.d`) points `mysqli.default_socket` at `/var/run/mysqld/mysqld.sock` so a socket mount works. It also turns `session.upload_progress.enabled` **off** as a temporary stopgap for php2shell (CVE-2026-109618/109619, leaked 2026-10-20, PHP fix scheduled for 2026-10-21 14:00 UTC). That stopgap closes at most one of the two bugs, and is to be removed once the `FROM` base carries the patched PHP. `10-image` asserts the value through `php-fpm -i`, not `php -i`, because the CLI says nothing about the SAPI that serves requests.
 
 Six things about this layer are load-bearing and easy to undo by accident:
 
