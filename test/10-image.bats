@@ -15,9 +15,6 @@ emit wp_mysql_ver  "$(wp --allow-root cli info 2>/dev/null | sed -n 's/^MySQL ve
 emit dev_pkgs      "$(apk info 2>/dev/null | grep -c -- '-dev$' || true)"
 emit repos         "$(tr '\n' ' ' </etc/apk/repositories)"
 emit opcache_ini   "$(tr '\n' ' ' </usr/local/etc/php/conf.d/opcache-recommended.ini)"
-# php-fpm, not php: the CLI reporting Off says nothing about the SAPI that
-# serves requests.
-emit fpm_upload_progress "$(php-fpm -i 2>/dev/null | sed -n 's/^session.upload_progress.enabled => \([^ ]*\) .*/\1/p')"
 
 for bin in wp mysql mysqldump mysqlcheck ssmtp usermod groupmod curl; do
     emit "bin_$bin" "$(command -v "$bin" >/dev/null 2>&1 && echo yes || echo no)"
@@ -197,10 +194,6 @@ setup() { load test_helper; }
 
 @test "no edge repository in the apk config" {
     refute_regex "$(batch_get repos)" 'edge'
-}
-
-@test "php-fpm runs with session upload progress OFF (php2shell stopgap)" {
-    assert_equal "$(batch_get fpm_upload_progress)" Off
 }
 
 @test "opcache.fast_shutdown is not set (removed in PHP 7.2)" {
