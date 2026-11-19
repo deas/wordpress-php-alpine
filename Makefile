@@ -25,10 +25,10 @@ help:  ## Describe available tasks in Makefile
 # ------- Build ---------------------- #
 
 build: ## Build image locally, CACHED — the edit/test loop
-	docker build -t $(IMAGE) .
+	docker build --pull -t $(IMAGE) .
 
 docker-build: ## Build image locally, --no-cache (what release does)
-	docker build --no-cache -t $(IMAGE) .
+	docker build --pull --no-cache -t $(IMAGE) .
 
 act-build: ## Build image with act
 	false
